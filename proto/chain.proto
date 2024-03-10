@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package chain;
+
+service BastionService {
+  rpc AddBlock (AddBlockRequest) returns (AddBlockResponse) {}
+  rpc GetBlockchain (GetBlockchainRequest) returns (GetBlockchainResponse) {}
+  rpc CreateBlockchain (CreateBlockchainRequest) returns (CreateBlockchainResponse) {}
+  rpc GetBlockchainHeight (GetBlockchainHeightRequest) returns (GetBlockchainHeightResponse) {}
+}
+
+service BlockService {
+    rpc AddTransaction (AddTransactionRequest) returns (AddTransactionResponse) {}
+    rpc CreateBlock (CreateBlockRequest) returns (CreateBlockResponse) {}
+    rpc GetPreviousHash (GetPreviousHashRequest) returns (GetPreviousHashResponse) {}
+    // rpc HashBlock (HashBlockRequest) returns (HashBlockResponse) {}
+}
+
+service TransactionService {
+     rpc CreateTransaction (AddTransactionRequest) returns (AddTransactionResponse) {}
+}
+
+service EntropyService {
+    rpc GetEntropy (GetEntropyRequest) returns (GetEntropyResponse) {}
+}
+
+// The request message containing the block data.
+message AddBlockRequest {
+  repeated Transaction transactions = 1;
+}
+
+// The response message containing the success status.
+message AddBlockResponse {
+  Block block = 1;
+  bool success = 2;
+}
+
+// The request message containing the blockchain data.
+// This is used to create a new blockchain.
+// The genesis block is the  block in the blockchain.
+message CreateBlockchainRequest {
+  Block genesisBlock = 1;
+}
+
+// The response message containing the success status.
+// This is used to create a new blockchain.
+// The genesis block is the  block in the blockchain.
+
+message CreateBlockchainResponse {
+  Blockchain blockchain = 1;
+  bool success = 2;
+}
+
+// The request message containing the block data.
+// This is used to create a new block.
+message CreateBlockRequest {
+ Block block = 1;
+}
+
+// The response message containing the success status.
+// This is used to create a new block.
+message CreateBlockResponse {
+  Block block = 1;
+  bool success = 2;
+}
+
+// The request message containing the transaction data.
+message AddTransactionRequest {
+    string id = 1;
+    BaseTransaction baseTransaction = 2;
+}
+
+message AddTransactionResponse {
+    bool success = 1;
+}
+
+// The request message containing the block data.
+// This is used to hash a block.
+message HashBlockRequest {
+  Block block = 1;
+}
+
+// The response message containing the success status.
+// This is used to hash a block.
+message HashBlockResponse {
+  Block block = 1;
+  bool success = 2;
+}
+
+// The request message for getting the blockchain.
+message GetBlockchainRequest {}
+
+// The response message containing the blockchain.
+message GetBlockchainResponse {
+  Blockchain blockchain = 1;
+  bool success = 2;
+}
+
+message GetBlockchainHeightRequest {}
+
+message GetBlockchainHeightResponse {
+  uint64 height = 1;
+  bool success = 2;
+}
+
+message GetEntropyRequest {
+    uint64 length = 1; // The length of the entropy to be generated
+}
+
+message GetEntropyResponse {
+  bytes entropy = 1; // The cryptographically secure entropy from the node
+}
+
+message Blockchain {
+  repeated Block blocks = 1;
+}
+
+// create header type for the gRPC metadata
+message Header {
+    bytes previousHash = 1;
+	uint64 height = 2;
+	bytes nonce = 3;
+	bytes hash = 4;
+	uint64 timestamp = 5;
+	bytes merkleRoot = 6;
+}
+
+// create body type for the gRPC metadata
+message Body {
+   repeated Transaction transactions = 1;
+}
+
+message Block {
+  Header header = 1;
+  Body body = 2;
+}
+
+message GetPreviousHashRequest {}
+message GetPreviousHashResponse {
+  bytes previousHash = 1;
+  bool success = 2;
+}
+
+// create base transaction type for the gRPC metadata
+message BaseTransaction {
+    bytes from = 1;
+    bytes to = 2;
+    uint64 value = 3;
+    uint64 timestamp = 4;
+    bytes signature = 5;
+    bytes nonce = 6;
+}
+
+// create transaction type for the gRPC metadata
+message Transaction {
+  bytes id = 1;
+  BaseTransaction baseTransaction = 2;
+}
+
+message TransactionResponse {
+  bytes id = 1;
+  bool success = 2;
+}
+
+message TransactionRequest {
+  bytes id = 1;
+  BaseTransaction baseTransaction = 2;
+}
