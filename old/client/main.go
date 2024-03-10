@@ -7,7 +7,7 @@ import (
 
 	"log"
 
-	"bastion.network/bastion/block"
+	"bastion.network/bastion/pkg/block"
 	pb "bastion.network/bastion/proto/gen/chain"
 
 	kyberk2so "github.com/symbolicsoft/kyber-k2so"

@@ -10,7 +10,7 @@ import (
 
 	"log"
 
-	"bastion.network/bastion/block"
+	"bastion.network/bastion/pkg/block"
 	pb "bastion.network/bastion/proto/gen/chain"
 	"github.com/libp2p/go-libp2p/core/host"
 
