@@ -10,6 +10,9 @@ import (
 	p2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	"github.com/libp2p/go-libp2p/p2p/security/tls"
+
 	"google.golang.org/grpc"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -110,6 +113,8 @@ func NewLibP2PHost(p *Peer, port int) (host.Host, error) {
 		libp2p.ListenAddrStrings(string(*buf)),
 		libp2p.EnableNATService(),
 		libp2p.Identity(privKey),
+		libp2p.Security(noise.ID, noise.New),
+		libp2p.Security(libp2ptls.ID, libp2ptls.New),
 	}
 	h, err := libp2p.New(opts...)
 	if err != nil {

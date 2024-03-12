@@ -14,6 +14,7 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
+// PSRNG is a non-cryptographically secure pseudo-random number generator that implements the io.Reader interface.
 type PSRNG struct {
 	value  int64
 	seed   int64
@@ -54,6 +55,7 @@ func (r *PSRNG) Update(seed int64) {
 	r.value = mrand.New(r.source).Int63()
 }
 
+// Peer represents a single peer in the network.
 type Peer struct {
 	ID               string
 	PrivateKeyBuffer []byte
@@ -61,6 +63,7 @@ type Peer struct {
 	DHT 		  *dht.IpfsDHT
 }
 
+// GenPeerID generates a new peer ID and private key buffer.
 func GetPeers(qty int, seed int64) ([]*Peer, error) {
 	psrng := NewPSRNG(seed)
 	peers := make([]*Peer, 0)
@@ -75,6 +78,7 @@ func GetPeers(qty int, seed int64) ([]*Peer, error) {
 	return peers, nil
 }
 
+// NewKDHT creates a new Kademlia DHT instance with the provided host.
 func NewKDHT(ctx context.Context, h host.Host) (*dht.IpfsDHT, error) {
 	// Initialize a new DHT instance with the host, setting it to automatic mode.
 	// This allows the DHT to operate in client or server mode based on the network environment.
@@ -91,6 +95,7 @@ func NewKDHT(ctx context.Context, h host.Host) (*dht.IpfsDHT, error) {
 	return kdht, nil
 }
 
+// TODO: change to EDDSA with Curve448
 func GenPeerID(psrng *PSRNG) (string, []byte, error) {
 	psrng.Update(psrng.seed + 1)
 	buf := make([]byte, 64)
@@ -102,6 +107,7 @@ func GenPeerID(psrng *PSRNG) (string, []byte, error) {
 	}
 	publicKeyBytes := []byte(ed25519.PublicKey(pbK))
 	privateKeyBytes := []byte(ed25519.PrivateKey(prvK))
+
 	buf = make([]byte, 64)
 	copy(buf, privateKeyBytes)
 	copy(buf[32:], publicKeyBytes)

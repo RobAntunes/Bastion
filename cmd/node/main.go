@@ -17,6 +17,7 @@ import (
 	"github.com/ipfs/go-cid"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multihash"
 )
@@ -27,10 +28,15 @@ const (
 	PORT_MAX    = 59998
 )
 
+type Node struct {
+	IsBootstrap    bool
+	BootstrapPeers *[]*p2p.Peer
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Ensure context cancellation on function exit
 
-	// Setup host and DHT
 	contentID, err := cid.V1Builder{Codec: cid.Raw, MhType: multihash.SHA2_256}.Sum([]byte("bastion"))
 	if err != nil {
 		log.Fatalf("Failed to create content ID: %v", err)
@@ -40,25 +46,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get bootstrap peers: %v", err)
 	}
-	bspch := make(chan string, len(bootstrapPeers)) // Buffer to number of peers for non-blocking writes.
 
-	// Use WaitGroup to wait for all bootstrap node goroutines to finish.
 	var wg sync.WaitGroup
-	var connectWg sync.WaitGroup
+	comms := make(chan string, 10) // Adjust buffer size as needed
 
+	// Handle bootstrap or regular mode
 	if len(os.Args) > 1 && os.Args[1] == "-b" {
-		if err != nil {
-			log.Fatalf("Failed to get peers: %v", err)
-		}
-		for i, provider := range bootstrapPeers {
-			wg.Add(1) // Increment WaitGroup counter before starting a goroutine.
-
-			// Put content on the DHT
-			provider.DHT.PutValue(ctx, contentID.String(), []byte("I...AM...ALIVE!"))
-			go func(ctx context.Context, provider *p2p.Peer, index int) {
+		for _, provider := range bootstrapPeers {
+			wg.Add(1)
+			go func(provider *p2p.Peer) {
 				defer wg.Done()
-				ActiveLoop(ctx, provider.H, provider.DHT, &contentID, true)
-			}(ctx, provider, i)
+				ActiveLoop(ctx, provider.H, provider.DHT, &contentID, &Node{IsBootstrap: true, BootstrapPeers: &bootstrapPeers}, comms)
+			}(provider)
 		}
 	} else {
 		peers, err := Start(1, rand.Int63(), false)
@@ -67,135 +66,172 @@ func main() {
 		}
 		localPeer := peers[0]
 
-		// Use WaitGroup to wait for all connection attempts to finish.
-
-		for i, p := range bootstrapPeers {
-			connectWg.Add(1) // Increment WaitGroup counter before starting a goroutine.
-
-			// Put content on the DHT
-			localPeer.DHT.PutValue(ctx, contentID.String(), []byte("I...AM...ALIVE!"))
-
-			go func(ctx context.Context, p *p2p.Peer, idx int) {
-				defer connectWg.Done() // Decrement counter when goroutine completes.
-				ConnectToPeer(ctx, localPeer.H, p, bspch, idx)
-				ActiveLoop(ctx, localPeer.H, localPeer.DHT, &contentID, false)
-			}(ctx, p, i)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ActiveLoop(ctx, localPeer.H, localPeer.DHT, &contentID, &Node{IsBootstrap: false, BootstrapPeers: &bootstrapPeers}, comms)
+		}()
 	}
 
+	// Consume comms channel in a separate goroutine
 	go func() {
-		for msg := range bspch {
-			fmt.Println(msg) // Consumes messages as they arrive.
+		for msg := range comms {
+			fmt.Println(msg)
 		}
 	}()
 
 	// Setup signal handling for graceful shutdown.
+	setupSignalHandling(ctx, cancel, &wg, comms)
+
+	<-ctx.Done()
+}
+
+func setupSignalHandling(ctx context.Context, cancelFunc context.CancelFunc, wg *sync.WaitGroup, comms chan string) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
 	go func() {
 		select {
 		case <-c:
 			fmt.Println("\nReceived shutdown signal")
-			cancel() // Cancel the context.
+			cancelFunc()
 		case <-ctx.Done():
-			// Handle context cancellation.
+			// Context canceled, possibly due to shutdown
+			wg.Wait()
+			fmt.Println("Shutting down gracefully...")
+			close(comms) // Ensure channel is closed when all operations are done
 		}
-		wg.Wait()        // Wait for all bootstrap node goroutines to finish.
-		connectWg.Wait() // Wait for all connection attempts to finish.
-		// !!!
-		// TODO: Consider waiting for other goroutines you might have.
-		// !!!
-		fmt.Println("Shutting down gracefully...")
-		close(bspch) // Close channel after all writes are done and before program exit.
 	}()
-
-	<-ctx.Done() // Ensures main does not exit prematurely, waiting for signal handling or explicit cancellation.
 }
 
-func ActiveLoop(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, contentID *cid.Cid, isBootstrap bool) {
+func ActiveLoop(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, contentID *cid.Cid, node *Node, comms chan string) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			fmt.Println("Node active:", h.ID().String())
+			if node.IsBootstrap {
+				log.Println("Bootstrap node")
+				go Provide(ctx, kdht, contentID, comms)
+				go FindProvidersAndConnect(ctx, kdht, h, contentID, comms)
+				select {
+				case <-ctx.Done():
+					// Context canceled, possibly due to shutdown
+					return
+				default:
+					// Non-blocking write to channel
+					comms <- fmt.Sprint("Node active:", h.ID().String())
 
-			// Bootstrap nodes don't need to connect to other peers.
-			if !isBootstrap {
-				// Advertise content
-				if err := kdht.Provide(ctx, *contentID, true); err != nil {
-					log.Printf("Error advertising content: %v", err)
-				} else {
-					log.Printf("Content advertised: %s", contentID.String())
-				}
-
-				if err := FindProvidersAndConnect(ctx, h, kdht, contentID); err != nil {
-					log.Printf("Error finding providers and connecting: %v", err)
 				}
 			} else {
-				// Bootstrap nodes only need to advertise content.
-				if err := kdht.Provide(ctx, *contentID, true); err != nil {
-					log.Printf("Error advertising content: %v", err)
-				} else {
-					log.Printf("Content advertised: %s", contentID.String())
+				log.Println("Regular node")
+				// Regular node
+				for _, p := range *node.BootstrapPeers {
+					// do not attempt if already connected
+					if res := h.Network().Connectedness(peer.ID(p.ID)); res == network.Connected {
+						comms <- "Already connected..."
+						continue
+					}
+					go ConnectToPeer(ctx, h, p, comms, 0)
+
+					select {
+					case <-ctx.Done():
+						// Context canceled, possibly due to shutdown
+						return
+					default:
+						// Non-blocking write to channel
+						comms <- "Connecting to bootstrap node..."
+
+					}
 				}
-				fmt.Println("Peerlist:", kdht.RoutingTable().ListPeers())
+
+				// Periodically provide content
+				go Provide(ctx, kdht, contentID, comms)
+
+				// Periodically find providers and connect
+				go FindProvidersAndConnect(ctx, kdht, h, contentID, comms)
+
+				select {
+				case <-ctx.Done():
+					// Context canceled, possibly due to shutdown
+					return
+				default:
+					// Non-blocking write to channel
+					comms <- "Regular node active... " + fmt.Sprintf("%v", kdht.RoutingTable().ListPeers())
+				}
 			}
 		case <-ctx.Done():
-			fmt.Println("Node shutting down...")
+			comms <- "Shutting down..."
 			return
-
 		}
 	}
 }
 
-func ConnectToPeer(ctx context.Context, h host.Host, p *p2p.Peer, pch chan string, idx int) {
+func ConnectToPeer(ctx context.Context, h host.Host, p *p2p.Peer, comms chan string, idx int) {
 	err := h.Connect(ctx, peer.AddrInfo{
 		ID:    p.H.ID(),
 		Addrs: p.H.Addrs(),
 	})
 
 	if err != nil {
-		fmt.Println("Error connecting to peer:", err)
-		pch <- err.Error()
+		comms <- err.Error() + "\n"
 		return
 	}
 
 	// After connecting successfully
 	select {
-	case <-pch:
-		return
 	case <-ctx.Done():
 		// Context canceled, possibly due to shutdown
 		return
 	default:
 		// Non-blocking write to channel
-		pch <- fmt.Sprintf("Connected to bootstrap peer %s", p.H.ID().String())
+		comms <- "Connected to peer %s " + p.H.ID().String()
 	}
 }
 
-// FindProvidersAndConnect searches for providers for the given content and attempts to connect to them.
-func FindProvidersAndConnect(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, contentID *cid.Cid) error {
-	providers, err := kdht.FindProviders(ctx, *contentID)
+func Provide(ctx context.Context, kdht *dht.IpfsDHT, contentID *cid.Cid, comms chan string) {
+	err := kdht.Provide(ctx, *contentID, true)
 	if err != nil {
-		log.Printf("Error finding providers: %v", err)
-		return err
+		comms <- err.Error()
+	} else {
+		comms <- fmt.Sprintf("Provided content %s", contentID.String())
 	}
-	fmt.Println("Found providers:", providers)
-	for _, provider := range providers {
-		if provider.ID == h.ID() {
-			fmt.Println("skipping self...")
-			continue // skip self
-		}
-		if err := h.Connect(ctx, provider); err != nil {
-			log.Printf("Failed to connect to provider %s: %v", provider.ID, err)
+}
+
+func FindProvidersAndConnect(ctx context.Context, kdht *dht.IpfsDHT, h host.Host, contentID *cid.Cid, comms chan string) {
+	provider := kdht.FindProvidersAsync(ctx, *contentID, 0)
+
+	// Periodically provide content
+	for p := range provider {
+		go Provide(ctx, kdht, contentID, comms)
+		if p.ID == h.ID() {
+			continue
 		} else {
-			log.Printf("Connected to provider %s", provider.ID)
-			kdht.GetValue(ctx, contentID.String())
+			comms <- fmt.Sprintf("Found provider: %s", p.ID.String())
+			if res := h.Network().Connectedness(p.ID); res == network.Connected {
+				comms <- "Already connected..."
+				continue
+			} else {
+				comms <- "Connecting to provider..."
+				go func(comms chan string) {
+					h.Connect(ctx, peer.AddrInfo{
+						ID:    p.ID,
+						Addrs: p.Addrs,
+					})
+				}(comms)
+
+				select {
+				case <-ctx.Done():
+					// Context canceled, possibly due to shutdown
+					return
+				default:
+					// Non-blocking write to channel
+					comms <- "Connected to provider..."
+				}
+			}
 		}
 	}
-	return nil
 }
 
 // Creates a new host and DHT instance
